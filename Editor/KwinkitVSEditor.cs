@@ -1,5 +1,6 @@
 // Kwinkit-VS / Editor / KwinkitVSEditor.cs
-// Inspector UI, icon loading and menu items. Editor-only: Unity compiles anything in an "Editor" folder out of builds.
+// Inspector UI for the Kwinkit-VS component, icon loading and menu items.
+// Editor-only: Unity compiles anything in an "Editor" folder out of builds.
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -20,8 +21,8 @@ namespace Kwinkit.VS
         public static Color IconTint => Pro ? new Color(.85f, .85f, .88f) : new Color(.25f, .25f, .28f);
         public static void ClearCache() { cache.Clear(); }
 
-        // Resolved from this script's location, so the Kwinkit-VS folder can live anywhere under Assets/.
-        static string Root
+        // Resolved from KwinkitVS.cs, so the Kwinkit-VS folder can live anywhere under Assets/.
+        public static string Root
         {
             get
             {
@@ -38,9 +39,22 @@ namespace Kwinkit.VS
             }
         }
 
+        // Looks in <Root>/Icons first, then anywhere under <Root>, matching the file name case-insensitively.
+        static Texture2D LoadIcon(string name)
+        {
+            var t = AssetDatabase.LoadAssetAtPath<Texture2D>(Root + "/Icons/" + name + ".png");
+            if (t != null || !AssetDatabase.IsValidFolder(Root)) return t;
+            foreach (var g in AssetDatabase.FindAssets(name + " t:Texture2D", new[] { Root }))
+            {
+                var p = AssetDatabase.GUIDToAssetPath(g);
+                if (string.Equals(Path.GetFileNameWithoutExtension(p), name, StringComparison.OrdinalIgnoreCase)) return AssetDatabase.LoadAssetAtPath<Texture2D>(p);
+            }
+            return null;
+        }
+
         public static Texture Icon(string name, string builtin = null)
         {
-            if (!cache.ContainsKey(name)) cache[name] = AssetDatabase.LoadAssetAtPath<Texture2D>(Root + "/Icons/" + name + ".png");
+            if (!cache.ContainsKey(name)) cache[name] = LoadIcon(name);
             var t = cache[name];
             if (t != null) return t;
             return builtin != null ? EditorGUIUtility.FindTexture(builtin) : null;
@@ -51,6 +65,18 @@ namespace Kwinkit.VS
         public static GUIStyle BannerSub => bannerSub ??= new GUIStyle(EditorStyles.miniLabel) { normal = { textColor = new Color(.6f, .65f, .75f) } };
         public static GUIStyle Section => section ??= new GUIStyle(EditorStyles.miniBoldLabel) { margin = new RectOffset(6, 0, 6, 2) };
         public static GUIStyle BigButton => bigButton ??= new GUIStyle(GUI.skin.button) { fontStyle = FontStyle.Bold, fontSize = 12 };
+
+        public static void Banner(string title, string sub)
+        {
+            var r = GUILayoutUtility.GetRect(0, 38, GUILayout.ExpandWidth(true));
+            EditorGUI.DrawRect(r, new Color(.09f, .10f, .13f));
+            EditorGUI.DrawRect(new Rect(r.x, r.yMax - 2, r.width, 2), new Color(.30f, .62f, 1f));
+            float x = r.x + 10;
+            var logo = Icon("logo");
+            if (logo != null) { GUI.DrawTexture(new Rect(x, r.y + 7, 24, 24), logo, ScaleMode.ScaleToFit); x += 32; }
+            GUI.Label(new Rect(x, r.y + 3, r.width - x, 18), title, BannerTitle);
+            GUI.Label(new Rect(x, r.y + 20, r.width - x, 16), sub, BannerSub);
+        }
 
         public static void BeginCard(Color accent)
         {
@@ -100,7 +126,7 @@ namespace Kwinkit.VS
         static string TriggerBuiltin(TriggerType t) => t switch { TriggerType.OnStart => "d_PlayButton", TriggerType.OnInterval => "d_preAudioLoopOff", _ => null };
         static string CmdIcon(CommandType t) => t switch
         {
-            CommandType.PrintLog => "log", CommandType.Wait => "timer", CommandType.SetBool => "save", CommandType.ToggleGameObject => "eye",
+            CommandType.PrintLog => "log", CommandType.Wait => "timer", CommandType.SetVariable => "save", CommandType.ToggleGameObject => "eye",
             CommandType.SetPosition => "move", CommandType.SetRotation => "rotate", CommandType.PlaySound => "sound",
             CommandType.DestroyObject => "delete", CommandType.GetInput => "keyboard", _ => "shield"
         };
@@ -113,14 +139,14 @@ namespace Kwinkit.VS
         static string CmdMenu(CommandType t) => t switch
         {
             CommandType.PrintLog => "Debug/Print Log", CommandType.Wait => "Flow/Wait", CommandType.GetInput => "Flow/Get Input (wait for key)",
-            CommandType.RequireBool => "Flow/Require Bool (stop if not)", CommandType.SetBool => "Data/Set Bool (saved)",
+            CommandType.RequireVariable => "Flow/Require Variable (stop if not)", CommandType.SetVariable => "Data/Set Variable",
             CommandType.ToggleGameObject => "Object/Toggle GameObject", CommandType.SetPosition => "Object/Set Position",
             CommandType.SetRotation => "Object/Set Rotation", CommandType.DestroyObject => "Object/Destroy Object", _ => "Audio/Play Sound"
         };
         static Color CmdColor(CommandType t) => t switch
         {
             CommandType.PrintLog => new Color(.30f, .60f, 1f), CommandType.Wait => new Color(.65f, .65f, .72f),
-            CommandType.SetBool => new Color(.70f, .50f, 1f), CommandType.ToggleGameObject => new Color(1f, .62f, .25f),
+            CommandType.SetVariable => new Color(.70f, .50f, 1f), CommandType.ToggleGameObject => new Color(1f, .62f, .25f),
             CommandType.SetPosition => new Color(.25f, .80f, .75f), CommandType.SetRotation => new Color(.70f, .90f, .30f),
             CommandType.PlaySound => new Color(1f, .45f, .65f), CommandType.DestroyObject => new Color(1f, .38f, .35f),
             CommandType.GetInput => new Color(.85f, .75f, .55f), _ => new Color(1f, .82f, .25f)
@@ -137,7 +163,7 @@ namespace Kwinkit.VS
             var oldIcon = EditorGUIUtility.GetIconSize(); var oldLabel = EditorGUIUtility.labelWidth;
             EditorGUIUtility.SetIconSize(new Vector2(14, 14)); EditorGUIUtility.labelWidth = 90;
 
-            Banner();
+            KwinkitUI.Banner("KWINKIT-VS", "WHEN trigger  →  THEN run commands in order");
             DrawTrigger();
             GUILayout.Label("▼", new GUIStyle(EditorStyles.centeredGreyMiniLabel) { fontSize = 12 });
             DrawCommands(t);
@@ -145,18 +171,6 @@ namespace Kwinkit.VS
 
             EditorGUIUtility.labelWidth = oldLabel; EditorGUIUtility.SetIconSize(oldIcon);
             serializedObject.ApplyModifiedProperties();
-        }
-
-        void Banner()
-        {
-            var r = GUILayoutUtility.GetRect(0, 38, GUILayout.ExpandWidth(true));
-            EditorGUI.DrawRect(r, new Color(.09f, .10f, .13f));
-            EditorGUI.DrawRect(new Rect(r.x, r.yMax - 2, r.width, 2), new Color(.30f, .62f, 1f));
-            float x = r.x + 10;
-            var logo = KwinkitUI.Icon("logo");
-            if (logo != null) { GUI.DrawTexture(new Rect(x, r.y + 7, 24, 24), logo, ScaleMode.ScaleToFit); x += 32; }
-            GUI.Label(new Rect(x, r.y + 3, r.width - x, 18), "KWINKIT-VS", KwinkitUI.BannerTitle);
-            GUI.Label(new Rect(x, r.y + 20, r.width - x, 16), "WHEN trigger  →  THEN run commands in order", KwinkitUI.BannerSub);
         }
 
         void DrawTrigger()
@@ -174,15 +188,22 @@ namespace Kwinkit.VS
             {
                 case TriggerType.StartDelay: EditorGUILayout.PropertyField(P("seconds"), new GUIContent("Delay (s)")); break;
                 case TriggerType.OnInterval: EditorGUILayout.PropertyField(P("seconds"), new GUIContent("Every (s)")); break;
-                case TriggerType.OnBoolChange:
-                    EditorGUILayout.PropertyField(P("boolKey"), new GUIContent("Bool key"));
-                    EditorGUILayout.PropertyField(P("boolChange"), new GUIContent("Change"));
-                    if (string.IsNullOrEmpty(P("boolKey").stringValue)) KwinkitUI.Warn("Enter the bool key to watch");
-                    break;
                 case TriggerType.OnKeyPress: EditorGUILayout.PropertyField(P("key"), new GUIContent("Key")); break;
+                case TriggerType.OnVariableChange:
+                    {
+                        var def = KwinkitVarUI.StoreAndVariable(P("store"), P("variable"));
+                        if (def == null) break;
+                        EditorGUILayout.PropertyField(P("useCondition"), new GUIContent("Only when"));
+                        if (P("useCondition").boolValue)
+                        {
+                            KwinkitVarUI.ComparePopup(P("compare"), def.type, "Value is");
+                            KwinkitVarUI.Operand(P("value"), def.type, "Compared to");
+                        }
+                        break;
+                    }
             }
             if (type != TriggerType.OnStart) EditorGUILayout.PropertyField(P("runOnce"), new GUIContent("Run once"));
-            if (type == TriggerType.OnInterval || type == TriggerType.OnBoolChange || type == TriggerType.OnKeyPress)
+            if (type == TriggerType.OnInterval || type == TriggerType.OnVariableChange || type == TriggerType.OnKeyPress)
                 EditorGUILayout.PropertyField(P("allowOverlap"), new GUIContent("Allow overlap"));
             if (P("seconds").floatValue < 0f) P("seconds").floatValue = 0f;
             KwinkitUI.EndCard();
@@ -236,30 +257,44 @@ namespace Kwinkit.VS
         static void AddCommand(KwinkitVS t, CommandType ct)
         {
             Undo.RecordObject(t, "Add Kwinkit-VS Command");
-            t.commands.Add(new VSCommand { type = ct, text = ct == CommandType.PrintLog ? "Hello" : "" });
+            var cmd = new VSCommand { type = ct, text = ct == CommandType.PrintLog ? "Hello" : "" };
+            if (ct == CommandType.SetVariable || ct == CommandType.RequireVariable)
+                foreach (var other in t.commands) if (other.store != null) cmd.store = other.store; // reuse the store of the previous variable command
+            t.commands.Add(cmd);
             EditorUtility.SetDirty(t);
             PrefabUtility.RecordPrefabInstancePropertyModifications(t);
         }
 
         void CommandFields(SerializedProperty e, CommandType ct)
         {
-            var text = e.FindPropertyRelative("text");
-            var boolValue = e.FindPropertyRelative("boolValue");
             switch (ct)
             {
                 case CommandType.PrintLog:
-                    EditorGUILayout.PropertyField(text, new GUIContent("Message")); break;
+                    EditorGUILayout.PropertyField(e.FindPropertyRelative("text"), new GUIContent("Message")); break;
                 case CommandType.Wait:
                     var s = e.FindPropertyRelative("seconds");
                     EditorGUILayout.PropertyField(s, new GUIContent("Seconds"));
                     if (s.floatValue < 0f) s.floatValue = 0f;
                     break;
-                case CommandType.SetBool:
-                case CommandType.RequireBool:
-                    EditorGUILayout.PropertyField(text, new GUIContent("Bool key"));
-                    EditorGUILayout.PropertyField(boolValue, new GUIContent(ct == CommandType.SetBool ? "Set to" : "Must be"));
-                    if (string.IsNullOrEmpty(text.stringValue)) KwinkitUI.Warn("Enter a bool key");
-                    break;
+                case CommandType.SetVariable:
+                    {
+                        var def = KwinkitVarUI.StoreAndVariable(e.FindPropertyRelative("store"), e.FindPropertyRelative("variable"));
+                        if (def == null) break;
+                        var opP = e.FindPropertyRelative("op");
+                        KwinkitVarUI.OpPopup(opP, def.type);
+                        var op = (SetOperation)opP.enumValueIndex;
+                        if (op != SetOperation.Toggle) KwinkitVarUI.Operand(e.FindPropertyRelative("value"), def.type, op == SetOperation.Add ? (def.type == VariableType.String ? "Text" : "Amount") : "Value");
+                        break;
+                    }
+                case CommandType.RequireVariable:
+                    {
+                        var def = KwinkitVarUI.StoreAndVariable(e.FindPropertyRelative("store"), e.FindPropertyRelative("variable"));
+                        if (def == null) break;
+                        KwinkitVarUI.ComparePopup(e.FindPropertyRelative("compare"), def.type, "Continue if");
+                        KwinkitVarUI.Operand(e.FindPropertyRelative("value"), def.type, "Value");
+                        GUILayout.Label("Stops the sequence when the check fails.", EditorStyles.miniLabel);
+                        break;
+                    }
                 case CommandType.ToggleGameObject:
                 case CommandType.SetPosition:
                 case CommandType.SetRotation:
@@ -314,27 +349,32 @@ namespace Kwinkit.VS
     [InitializeOnLoad]
     static class KwinkitScriptIcon
     {
+        const string Flag = "KwinkitVS.IconAssigned";
         static KwinkitScriptIcon() { Schedule(); }
-        public static void Schedule() { EditorApplication.delayCall -= Apply; EditorApplication.delayCall += Apply; }
+        public static void Schedule() { EditorApplication.delayCall -= ApplyAuto; EditorApplication.delayCall += ApplyAuto; }
+        static void ApplyAuto() { Apply(false); }
 
-        static void Apply()
+        /// <summary>Assigns the icon. Returns a message describing what happened. Automatic runs try once per editor session.</summary>
+        public static string Apply(bool force)
         {
             KwinkitUI.ClearCache();
             var icon = KwinkitUI.Icon("kwinkitvs") as Texture2D;
-            if (icon == null) return;
+            if (icon == null) return "kwinkitvs.png was not found under " + KwinkitUI.Root + " (put it in the Icons folder).";
             foreach (var g in AssetDatabase.FindAssets("KwinkitVS t:MonoScript"))
             {
                 var p = AssetDatabase.GUIDToAssetPath(g);
                 if (Path.GetFileNameWithoutExtension(p) != "KwinkitVS") continue;
                 var script = AssetDatabase.LoadAssetAtPath<MonoScript>(p);
-                if (script == null || EditorGUIUtility.GetIconForObject(script) == icon) return;
-                if (SessionState.GetBool("KwinkitVS.IconAssigned", false)) return; // one attempt per editor session: a reimport can never loop
-                SessionState.SetBool("KwinkitVS.IconAssigned", true);
+                if (script == null) return "KwinkitVS.cs could not be loaded.";
+                if (EditorGUIUtility.GetIconForObject(script) == icon) return "The icon is already assigned to " + p + ".";
+                if (!force && SessionState.GetBool(Flag, false)) return "";
+                SessionState.SetBool(Flag, true);
                 EditorGUIUtility.SetIconForObject(script, icon);
                 var importer = AssetImporter.GetAtPath(p);
                 if (importer != null) { EditorUtility.SetDirty(importer); importer.SaveAndReimport(); }
-                return;
+                return "Assigned kwinkitvs.png to " + p + ". If the Add Component list still shows the old icon, restart Unity.";
             }
+            return "KwinkitVS.cs was not found.";
         }
     }
 
@@ -360,10 +400,21 @@ namespace Kwinkit.VS
             Selection.activeGameObject = go;
         }
 
-        [MenuItem("Tools/Kwinkit-VS/Reveal Saved Bools File")]
-        static void Reveal() { EditorUtility.RevealInFinder(BoolStore.FilePath); }
+        [MenuItem("Tools/Kwinkit-VS/Reveal Save Folder")]
+        static void Reveal()
+        {
+            Directory.CreateDirectory(VariableRuntime.SaveFolder);
+            EditorUtility.RevealInFinder(VariableRuntime.SaveFolder);
+        }
 
-        [MenuItem("Tools/Kwinkit-VS/Clear Saved Bools")]
-        static void Clear() { if (EditorUtility.DisplayDialog("Kwinkit-VS", "Delete all saved booleans?", "Delete", "Cancel")) BoolStore.ClearAll(); }
+        [MenuItem("Tools/Kwinkit-VS/Delete All Saved Variables")]
+        static void ClearSaves()
+        {
+            if (!EditorUtility.DisplayDialog("Kwinkit-VS", "Delete every saved variable file for this project?", "Delete", "Cancel")) return;
+            if (Directory.Exists(VariableRuntime.SaveFolder)) Directory.Delete(VariableRuntime.SaveFolder, true);
+        }
+
+        [MenuItem("Tools/Kwinkit-VS/Apply Component Icon")]
+        static void ApplyIcon() { Debug.Log("[Kwinkit-VS] " + KwinkitScriptIcon.Apply(true)); }
     }
 }

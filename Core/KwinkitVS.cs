@@ -1,20 +1,19 @@
 // Kwinkit-VS / Core / KwinkitVS.cs
 // Component-based visual logic: WHEN (trigger) -> THEN (ordered commands).
 // Add Component > "Kwinkit-VS" (or GameObject > Kwinkit-VS > New Logic Object).
-// A hidden-lifetime manager (DontDestroyOnLoad) is created automatically at runtime and drives every component.
+// A manager (DontDestroyOnLoad) is created automatically at runtime and drives every component.
+// Variables live in Variable Store assets (see VariableStore.cs).
 // Optional icons live in Kwinkit-VS/Icons/<name>.png (see icon list); built-in fallbacks are used if missing.
 using System;
 using System.Collections;
 using System.Collections.Generic;
-using System.IO;
 using UnityEngine;
 
 namespace Kwinkit.VS
 {
-    // New enum values are always appended so scenes serialized with older versions keep their meaning.
-    public enum TriggerType { OnStart, StartDelay, OnInterval, OnBoolChange, OnKeyPress }
-    public enum BoolChange { Any, BecomesTrue, BecomesFalse }
-    public enum CommandType { PrintLog, Wait, SetBool, ToggleGameObject, RequireBool, SetPosition, SetRotation, PlaySound, DestroyObject, GetInput }
+    // Enum values keep their slots so older scenes still load: SetBool / RequireBool / OnBoolChange became the *Variable versions.
+    public enum TriggerType { OnStart, StartDelay, OnInterval, OnVariableChange, OnKeyPress }
+    public enum CommandType { PrintLog, Wait, SetVariable, ToggleGameObject, RequireVariable, SetPosition, SetRotation, PlaySound, DestroyObject, GetInput }
     public enum ActiveMode { On, Off, Toggle }
 
     [Serializable]
@@ -22,8 +21,7 @@ namespace Kwinkit.VS
     {
         public bool enabled = true;
         public CommandType type;
-        public string text = "";      // log message, or bool key
-        public bool boolValue = true;
+        public string text = "";      // PrintLog message
         public float seconds = 1f;
         public GameObject target;     // ToggleGameObject, SetPosition, SetRotation, DestroyObject
         public ActiveMode mode = ActiveMode.Toggle;
@@ -34,6 +32,11 @@ namespace Kwinkit.VS
         public float volume = 1f;     // PlaySound
         public bool waitForEnd;       // PlaySound: pause the sequence until the clip finishes
         public KeyCode key = KeyCode.Space; // GetInput
+        public VariableStore store;   // SetVariable, RequireVariable
+        public string variable = "";
+        public SetOperation op = SetOperation.Set;
+        public CompareOp compare = CompareOp.Equal;
+        public VariableDef value = new VariableDef(); // operand: the value to set / add / compare against
     }
 
     /// <summary>Keyboard polling that works with the legacy Input Manager and, when it is the only active handler, the Input System package.</summary>
@@ -54,53 +57,7 @@ namespace Kwinkit.VS
         }
     }
 
-    /// <summary>Named booleans persisted to a JSON file in persistentDataPath.</summary>
-    public static class BoolStore
-    {
-        [Serializable] public class Entry { public string key; public bool value; }
-        [Serializable] public class Data { public List<Entry> entries = new List<Entry>(); }
-
-        static Dictionary<string, bool> cache;
-        public static event Action<string, bool> Changed;
-        public static string FilePath => Path.Combine(Application.persistentDataPath, "kwinkit_vs_bools.json");
-
-        static void Load()
-        {
-            if (cache != null) return;
-            cache = new Dictionary<string, bool>();
-            try
-            {
-                if (!File.Exists(FilePath)) return;
-                var d = JsonUtility.FromJson<Data>(File.ReadAllText(FilePath));
-                if (d != null) foreach (var e in d.entries) cache[e.key] = e.value;
-            }
-            catch (Exception ex) { Debug.LogWarning("[Kwinkit-VS] Could not load bools: " + ex.Message); }
-        }
-
-        static void Save()
-        {
-            var d = new Data();
-            foreach (var kv in cache) d.entries.Add(new Entry { key = kv.Key, value = kv.Value });
-            try { File.WriteAllText(FilePath, JsonUtility.ToJson(d, true)); }
-            catch (Exception ex) { Debug.LogWarning("[Kwinkit-VS] Could not save bools: " + ex.Message); }
-        }
-
-        public static bool Get(string key, bool fallback = false) { Load(); return cache.TryGetValue(key ?? "", out var v) ? v : fallback; }
-
-        public static void Set(string key, bool value)
-        {
-            if (string.IsNullOrEmpty(key)) return;
-            Load();
-            bool existed = cache.TryGetValue(key, out var old);
-            if (existed && old == value) return;
-            cache[key] = value; Save();
-            if (old != value) Changed?.Invoke(key, value); // an unset key counts as false
-        }
-
-        public static void ClearAll() { cache = new Dictionary<string, bool>(); Save(); }
-    }
-
-    /// <summary>Omnipresent runtime driver. Runs command sequences and ticks timers for all KwinkitVS components.</summary>
+    /// <summary>Omnipresent runtime driver. Runs command sequences, ticks timers and saves variables for all KwinkitVS components.</summary>
     [AddComponentMenu("")]
     public class KwinkitVSManager : MonoBehaviour
     {
@@ -131,7 +88,8 @@ namespace Kwinkit.VS
         public static void Register(KwinkitVS c) { var m = Instance; if (m != null && !m.registry.Contains(c)) m.registry.Add(c); }
         public static void Unregister(KwinkitVS c) { if (instance != null) instance.registry.Remove(c); }
 
-        void OnApplicationQuit() { quitting = true; }
+        void OnApplicationPause(bool paused) { if (paused) VariableRuntime.Flush(); }
+        void OnApplicationQuit() { VariableRuntime.Flush(); quitting = true; }
         void OnDestroy() { if (instance == this) instance = null; }
 
         void Update()
@@ -140,6 +98,8 @@ namespace Kwinkit.VS
             float dt = Time.deltaTime;
             foreach (var c in scratch) if (c != null && c.isActiveAndEnabled) c.Tick(dt);
         }
+
+        void LateUpdate() { VariableRuntime.Flush(); } // batches all variable changes of the frame into one write per store
     }
 
     [AddComponentMenu("Kwinkit-VS")]
@@ -147,19 +107,22 @@ namespace Kwinkit.VS
     {
         public TriggerType trigger = TriggerType.OnStart;
         public float seconds = 1f;                 // StartDelay: delay, OnInterval: period
-        public string boolKey = "";                // OnBoolChange
-        public BoolChange boolChange = BoolChange.Any;
+        public VariableStore store;                // OnVariableChange
+        public string variable = "";
+        public bool useCondition;                  // OnVariableChange: only fire when the new value passes the comparison
+        public CompareOp compare = CompareOp.Equal;
+        public VariableDef value = new VariableDef();
         public KeyCode key = KeyCode.Space;        // OnKeyPress
         public bool runOnce;
         public bool allowOverlap;
         public List<VSCommand> commands = new List<VSCommand>();
 
-        bool running, hasFired, delayPending, boolPending;
+        bool running, hasFired, delayPending, varPending;
         float timer;
         public bool IsRunning => running;
 
-        void OnEnable() { BoolStore.Changed += OnBool; KwinkitVSManager.Register(this); }
-        void OnDisable() { BoolStore.Changed -= OnBool; KwinkitVSManager.Unregister(this); }
+        void OnEnable() { VariableRuntime.Changed += OnVariable; KwinkitVSManager.Register(this); }
+        void OnDisable() { VariableRuntime.Changed -= OnVariable; KwinkitVSManager.Unregister(this); }
 
         void Start()
         {
@@ -168,18 +131,17 @@ namespace Kwinkit.VS
             else if (trigger == TriggerType.StartDelay) delayPending = true;
         }
 
-        // Deferred to Tick() so chained bool triggers cannot recurse within one call stack.
-        void OnBool(string key, bool value)
+        // Deferred to Tick() so chained variable triggers cannot recurse within one call stack.
+        void OnVariable(VariableStore s, string name)
         {
-            if (trigger != TriggerType.OnBoolChange || key != boolKey) return;
-            if (boolChange == BoolChange.BecomesTrue && !value) return;
-            if (boolChange == BoolChange.BecomesFalse && value) return;
-            boolPending = true;
+            if (trigger != TriggerType.OnVariableChange || s != store || name != variable) return;
+            if (useCondition && !VariableRuntime.Check(store, variable, compare, value)) return;
+            varPending = true;
         }
 
         internal void Tick(float dt)
         {
-            if (boolPending) { boolPending = false; Fire(); }
+            if (varPending) { varPending = false; Fire(); }
             if (trigger == TriggerType.StartDelay && delayPending)
             {
                 timer += dt;
@@ -219,7 +181,9 @@ namespace Kwinkit.VS
                     {
                         // commands that pause or stop the sequence need yield, so they live here
                         case CommandType.Wait: yield return new WaitForSeconds(Mathf.Max(0f, c.seconds)); break;
-                        case CommandType.RequireBool: if (BoolStore.Get(c.text) != c.boolValue) yield break; break;
+                        case CommandType.RequireVariable:
+                            if (!HasVariable(c) || !VariableRuntime.Check(c.store, c.variable, c.compare, c.value)) yield break;
+                            break;
                         case CommandType.GetInput:
                             yield return null; // skip the frame that started this sequence, so the same key press is not counted twice
                             while (!VSInput.KeyDown(c.key)) { if (this == null) yield break; yield return null; }
@@ -241,13 +205,22 @@ namespace Kwinkit.VS
             return false;
         }
 
+        bool HasVariable(VSCommand c)
+        {
+            if (c.store != null && !string.IsNullOrEmpty(c.variable)) return true;
+            Debug.LogWarning("[Kwinkit-VS] " + c.type + " needs a Variable Store and a variable.", this);
+            return false;
+        }
+
         // Instant commands.
         void Apply(VSCommand c)
         {
             switch (c.type)
             {
                 case CommandType.PrintLog: Debug.Log("[Kwinkit-VS] " + c.text, this); break;
-                case CommandType.SetBool: BoolStore.Set(c.text, c.boolValue); break;
+                case CommandType.SetVariable:
+                    if (HasVariable(c)) VariableRuntime.Apply(c.store, c.variable, c.op, c.value);
+                    break;
                 case CommandType.ToggleGameObject:
                     if (HasTarget(c)) c.target.SetActive(c.mode == ActiveMode.Toggle ? !c.target.activeSelf : c.mode == ActiveMode.On);
                     break;
@@ -288,5 +261,4 @@ namespace Kwinkit.VS
             return true;
         }
     }
-
 }
