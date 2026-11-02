@@ -417,4 +417,88 @@ namespace Kwinkit.VS
         [MenuItem("Tools/Kwinkit-VS/Apply Component Icon")]
         static void ApplyIcon() { Debug.Log("[Kwinkit-VS] " + KwinkitScriptIcon.Apply(true)); }
     }
+
+    // Automatically assigns custom Project window icons to Kwinkit-VS assets.
+    [InitializeOnLoad]
+    static class KwinkitAssetIcons
+    {
+        static KwinkitAssetIcons()
+        {
+            EditorApplication.projectWindowItemOnGUI -= DrawAssetIcon;
+            EditorApplication.projectWindowItemOnGUI += DrawAssetIcon;
+        }
+
+        static void DrawAssetIcon(string guid, Rect rect)
+        {
+            string path = AssetDatabase.GUIDToAssetPath(guid);
+
+            if (AssetDatabase.GetMainAssetTypeAtPath(path) != typeof(VariableStore))
+                return;
+
+            Texture icon = KwinkitUI.Icon("variable-store");
+            if (icon == null) return;
+
+            bool compactView = rect.width <= 20f || rect.height <= 20f;
+
+            float size = Mathf.Clamp(
+                Mathf.Min(rect.width, rect.height),
+                12f,
+                64f
+            );
+
+            // Cover only the icon region, never the filename.
+            Rect coverRect;
+            Rect iconRect;
+
+            if (compactView)
+            {
+                coverRect = new Rect(
+                    rect.x,
+                    rect.y - 2f,
+                    20f,
+                    20f
+                );
+
+                iconRect = new Rect(
+                    rect.x + 2,
+                    rect.y,
+                    Mathf.Min(size, 16f),
+                    Mathf.Min(size, 16f)
+                );
+            }
+            else
+            {
+                float iconArea = Mathf.Min(rect.width, rect.height);
+
+                coverRect = new Rect(
+                    rect.x,
+                    rect.y,
+                    iconArea,
+                    iconArea
+                );
+
+                float actualSize = Mathf.Min(size, iconArea);
+
+                iconRect = new Rect(
+                    rect.x + (iconArea - actualSize) / 2f,
+                    rect.y + (iconArea - actualSize) / 2f,
+                    actualSize,
+                    actualSize
+                );
+            }
+
+            Color background = EditorGUIUtility.isProSkin
+                ? new Color(0.22f, 0.22f, 0.22f, 1f)
+                : new Color(0.76f, 0.76f, 0.76f, 1f);
+
+            EditorGUI.DrawRect(coverRect, background);
+
+            GUI.DrawTexture(
+                iconRect,
+                icon,
+                ScaleMode.ScaleToFit,
+                true
+            );
+        }
+    }
 }
