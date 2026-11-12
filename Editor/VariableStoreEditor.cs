@@ -74,6 +74,61 @@ namespace Kwinkit.VS
             GUIUtility.ExitGUI(); // required after a modal panel opened from OnGUI
         }
 
+        public static void SourcedOperand(SerializedProperty sourceP, SerializedProperty valueP,
+            SerializedProperty operandStoreP, SerializedProperty operandVariableP, VariableType type, string label)
+        {
+            EditorGUILayout.PropertyField(sourceP, new GUIContent("Value from"));
+            if ((ValueSource)sourceP.enumValueIndex == ValueSource.Constant)
+                Operand(valueP, type, label);
+            else
+            {
+                var def = StoreAndVariable(operandStoreP, operandVariableP);
+                if (def != null && def.type != type && !(
+                    (type == VariableType.Int || type == VariableType.Float) &&
+                    (def.type == VariableType.Int || def.type == VariableType.Float)))
+                    KwinkitUI.Warn("Variable type does not match the destination");
+            }
+        }
+
+        public static void SourcedOperand(SerializedProperty owner, VariableType type, string label)
+        {
+            SourcedOperand(owner.FindPropertyRelative("valueSource"), owner.FindPropertyRelative("value"),
+                owner.FindPropertyRelative("operandStore"), owner.FindPropertyRelative("operandVariable"), type, label);
+        }
+
+        public static void NumberSource(SerializedProperty numberP, SerializedProperty referenceP, string label, bool nonNegative = false)
+        {
+            EditorGUILayout.PropertyField(referenceP.FindPropertyRelative("source"), new GUIContent(label + " from"));
+            if ((ValueSource)referenceP.FindPropertyRelative("source").enumValueIndex == ValueSource.Constant)
+            {
+                EditorGUILayout.PropertyField(numberP, new GUIContent(label));
+                if (nonNegative && numberP.floatValue < 0f) numberP.floatValue = 0f;
+            }
+            else
+            {
+                var chosen = StoreAndVariable(referenceP.FindPropertyRelative("store"), referenceP.FindPropertyRelative("variable"));
+                if (chosen != null && chosen.type != VariableType.Int && chosen.type != VariableType.Float)
+                    KwinkitUI.Warn("Select an Int or Float variable");
+            }
+        }
+
+        public static void AxisField(SerializedProperty vectorP, string axis, SerializedProperty refP)
+        {
+            EditorGUILayout.PropertyField(refP.FindPropertyRelative("source"), new GUIContent(axis + " from"));
+            var mode = (AxisSource)refP.FindPropertyRelative("source").enumValueIndex;
+            if (mode == AxisSource.Constant)
+            {
+                var field = vectorP.FindPropertyRelative(axis.ToLowerInvariant());
+                EditorGUILayout.PropertyField(field, new GUIContent(axis));
+            }
+            else if (mode == AxisSource.Variable)
+            {
+                var chosen = StoreAndVariable(refP.FindPropertyRelative("store"), refP.FindPropertyRelative("variable"));
+                if (chosen != null && chosen.type != VariableType.Int && chosen.type != VariableType.Float)
+                    KwinkitUI.Warn("Select an Int or Float variable");
+            }
+        }
+
         public static void OpPopup(SerializedProperty opP, VariableType t)
         {
             var allowed = t == VariableType.Bool ? new[] { SetOperation.Set, SetOperation.Toggle } : new[] { SetOperation.Set, SetOperation.Add };
@@ -121,7 +176,7 @@ namespace Kwinkit.VS
             serializedObject.Update();
             var oldIcon = EditorGUIUtility.GetIconSize(); EditorGUIUtility.SetIconSize(new Vector2(14, 14));
 
-            KwinkitUI.Banner("VARIABLE STORE", list.arraySize + " variables  ·  saves to " + Path.GetFileName(VariableRuntime.SavePath(store)));
+            KwinkitUI.Banner("VARIABLE STORE", list.arraySize + " variables  ·  " + (store.persistAcrossSessions ? "Persistent" : "Reset on Play"));
             DrawToolbar(store);
             DrawTable(store);
             DrawFooter(store);
@@ -195,7 +250,8 @@ namespace Kwinkit.VS
 
                 var type = (VariableType)typeP.enumValueIndex;
                 string slot = type == VariableType.Bool ? "boolValue" : type == VariableType.Int ? "intValue" : type == VariableType.Float ? "floatValue" : "stringValue";
-                EditorGUILayout.PropertyField(e.FindPropertyRelative(slot), GUIContent.none, GUILayout.Width(ValueW));
+                using (new EditorGUI.DisabledScope(live))
+                    EditorGUILayout.PropertyField(e.FindPropertyRelative(slot), GUIContent.none, GUILayout.Width(ValueW));
                 if (live) LiveField(store, nameP.stringValue);
                 if (KwinkitUI.IconButton("delete", "✕", "Delete variable")) del = i;
                 EditorGUILayout.EndHorizontal();
@@ -227,8 +283,15 @@ namespace Kwinkit.VS
         void DrawFooter(VariableStore store)
         {
             GUILayout.Space(8);
-            EditorGUILayout.PropertyField(serializedObject.FindProperty("saveFileName"), new GUIContent("Save file name"));
-            EditorGUILayout.LabelField("Saved to", VariableRuntime.SavePath(store), EditorStyles.miniLabel);
+            EditorGUILayout.PropertyField(serializedObject.FindProperty("persistAcrossSessions"), new GUIContent("Keep saved values"));
+            EditorGUILayout.HelpBox(store.persistAcrossSessions
+                ? "Persistent: live changes are saved and restored on the next Play session. Defaults are used only when there is no saved data (or after Delete Saved Values)."
+                : "Reset on Play: runtime values begin at the Default values EVERY Play session. Changes during play never overwrite defaults.", MessageType.Info);
+            if (store.persistAcrossSessions)
+            {
+                EditorGUILayout.PropertyField(serializedObject.FindProperty("saveFileName"), new GUIContent("Save file name"));
+                EditorGUILayout.LabelField("Saved to", VariableRuntime.SavePath(store), EditorStyles.miniLabel);
+            }
             EditorGUILayout.BeginHorizontal();
             if (GUILayout.Button("Reveal Save Folder"))
             {
@@ -238,7 +301,7 @@ namespace Kwinkit.VS
             if (GUILayout.Button("Delete Saved Values") && EditorUtility.DisplayDialog("Kwinkit-VS", "Delete the saved values of '" + store.name + "' and return to the defaults?", "Delete", "Cancel"))
                 VariableRuntime.ResetStore(store);
             EditorGUILayout.EndHorizontal();
-            GUILayout.Label("Defaults live in this asset. Live values are kept in the save file, so Play mode never changes this asset.", EditorStyles.centeredGreyMiniLabel);
+            GUILayout.Label("Default values can be edited outside Play mode. Live values are independent.", EditorStyles.centeredGreyMiniLabel);
         }
     }
 }

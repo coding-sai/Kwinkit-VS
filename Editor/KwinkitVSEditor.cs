@@ -127,8 +127,8 @@ namespace Kwinkit.VS
         static string CmdIcon(CommandType t) => t switch
         {
             CommandType.PrintLog => "log", CommandType.Wait => "timer", CommandType.SetVariable => "save", CommandType.ToggleGameObject => "eye",
-            CommandType.SetPosition => "move", CommandType.SetRotation => "rotate", CommandType.PlaySound => "sound",
-            CommandType.DestroyObject => "delete", CommandType.GetInput => "keyboard", _ => "shield"
+            CommandType.SetPosition => "move", CommandType.Move => "move", CommandType.SetRotation => "rotate", CommandType.PlaySound => "sound",
+            CommandType.DestroyObject => "delete", CommandType.GetInput => "keyboard", CommandType.SetLightIntensity => "light", _ => "shield"
         };
         static string CmdBuiltin(CommandType t) => t switch
         {
@@ -140,16 +140,16 @@ namespace Kwinkit.VS
         {
             CommandType.PrintLog => "Debug/Print Log", CommandType.Wait => "Flow/Wait", CommandType.GetInput => "Flow/Get Input (wait for key)",
             CommandType.RequireVariable => "Flow/Require Variable (stop if not)", CommandType.SetVariable => "Data/Set Variable",
-            CommandType.ToggleGameObject => "Object/Toggle GameObject", CommandType.SetPosition => "Object/Set Position",
-            CommandType.SetRotation => "Object/Set Rotation", CommandType.DestroyObject => "Object/Destroy Object", _ => "Audio/Play Sound"
+            CommandType.ToggleGameObject => "Object/Toggle GameObject", CommandType.Move => "Object/Move",
+            CommandType.SetPosition => "Legacy/Set Position", CommandType.SetRotation => "Object/Set Rotation", CommandType.DestroyObject => "Object/Destroy Object", CommandType.SetLightIntensity => "Lighting/Set Light Intensity", _ => "Audio/Play Sound"
         };
         static Color CmdColor(CommandType t) => t switch
         {
             CommandType.PrintLog => new Color(.30f, .60f, 1f), CommandType.Wait => new Color(.65f, .65f, .72f),
             CommandType.SetVariable => new Color(.70f, .50f, 1f), CommandType.ToggleGameObject => new Color(1f, .62f, .25f),
-            CommandType.SetPosition => new Color(.25f, .80f, .75f), CommandType.SetRotation => new Color(.70f, .90f, .30f),
+            CommandType.SetPosition => new Color(.25f, .80f, .75f), CommandType.Move => new Color(.25f, .80f, .75f), CommandType.SetRotation => new Color(.70f, .90f, .30f),
             CommandType.PlaySound => new Color(1f, .45f, .65f), CommandType.DestroyObject => new Color(1f, .38f, .35f),
-            CommandType.GetInput => new Color(.85f, .75f, .55f), _ => new Color(1f, .82f, .25f)
+            CommandType.GetInput => new Color(.85f, .75f, .55f), CommandType.SetLightIntensity => new Color(1f, .86f, .45f), _ => new Color(1f, .82f, .25f)
         };
 
         void OnEnable() { cmds = serializedObject.FindProperty("commands"); KwinkitUI.ClearCache(); }
@@ -186,8 +186,8 @@ namespace Kwinkit.VS
 
             switch (type)
             {
-                case TriggerType.StartDelay: EditorGUILayout.PropertyField(P("seconds"), new GUIContent("Delay (s)")); break;
-                case TriggerType.OnInterval: EditorGUILayout.PropertyField(P("seconds"), new GUIContent("Every (s)")); break;
+                case TriggerType.StartDelay: KwinkitVarUI.NumberSource(P("seconds"), P("secondsRef"), "Delay (s)", true); break;
+                case TriggerType.OnInterval: KwinkitVarUI.NumberSource(P("seconds"), P("secondsRef"), "Every (s)", true); break;
                 case TriggerType.OnKeyPress: EditorGUILayout.PropertyField(P("key"), new GUIContent("Key")); break;
                 case TriggerType.OnVariableChange:
                     {
@@ -197,7 +197,7 @@ namespace Kwinkit.VS
                         if (P("useCondition").boolValue)
                         {
                             KwinkitVarUI.ComparePopup(P("compare"), def.type, "Value is");
-                            KwinkitVarUI.Operand(P("value"), def.type, "Compared to");
+                            KwinkitVarUI.SourcedOperand(P("valueSource"), P("value"), P("operandStore"), P("operandVariable"), def.type, "Compared to");
                         }
                         break;
                     }
@@ -247,6 +247,7 @@ namespace Kwinkit.VS
                 var m = new GenericMenu();
                 foreach (CommandType c in Enum.GetValues(typeof(CommandType)))
                 {
+                    if (c == CommandType.SetPosition) continue; // old scenes still run; new ones use Move
                     var ct = c;
                     m.AddItem(new GUIContent(CmdMenu(ct)), false, () => AddCommand(t, ct));
                 }
@@ -273,8 +274,7 @@ namespace Kwinkit.VS
                     EditorGUILayout.PropertyField(e.FindPropertyRelative("text"), new GUIContent("Message")); break;
                 case CommandType.Wait:
                     var s = e.FindPropertyRelative("seconds");
-                    EditorGUILayout.PropertyField(s, new GUIContent("Seconds"));
-                    if (s.floatValue < 0f) s.floatValue = 0f;
+                    KwinkitVarUI.NumberSource(s, e.FindPropertyRelative("secondsRef"), "Seconds", true);
                     break;
                 case CommandType.SetVariable:
                     {
@@ -283,7 +283,7 @@ namespace Kwinkit.VS
                         var opP = e.FindPropertyRelative("op");
                         KwinkitVarUI.OpPopup(opP, def.type);
                         var op = (SetOperation)opP.enumValueIndex;
-                        if (op != SetOperation.Toggle) KwinkitVarUI.Operand(e.FindPropertyRelative("value"), def.type, op == SetOperation.Add ? (def.type == VariableType.String ? "Text" : "Amount") : "Value");
+                        if (op != SetOperation.Toggle) KwinkitVarUI.SourcedOperand(e, def.type, op == SetOperation.Add ? (def.type == VariableType.String ? "Text" : "Amount") : "Value");
                         break;
                     }
                 case CommandType.RequireVariable:
@@ -291,10 +291,13 @@ namespace Kwinkit.VS
                         var def = KwinkitVarUI.StoreAndVariable(e.FindPropertyRelative("store"), e.FindPropertyRelative("variable"));
                         if (def == null) break;
                         KwinkitVarUI.ComparePopup(e.FindPropertyRelative("compare"), def.type, "Continue if");
-                        KwinkitVarUI.Operand(e.FindPropertyRelative("value"), def.type, "Value");
+                        KwinkitVarUI.SourcedOperand(e, def.type, "Value");
                         GUILayout.Label("Stops the sequence when the check fails.", EditorStyles.miniLabel);
                         break;
                     }
+                case CommandType.Move:
+                    MoveFields(e);
+                    break;
                 case CommandType.ToggleGameObject:
                 case CommandType.SetPosition:
                 case CommandType.SetRotation:
@@ -304,17 +307,41 @@ namespace Kwinkit.VS
                     if (ct == CommandType.ToggleGameObject) EditorGUILayout.PropertyField(e.FindPropertyRelative("mode"), new GUIContent("Mode"));
                     if (ct == CommandType.SetPosition || ct == CommandType.SetRotation)
                     {
-                        EditorGUILayout.PropertyField(e.FindPropertyRelative("vector"), new GUIContent(ct == CommandType.SetPosition ? "Position" : "Rotation"));
+                        EditorGUILayout.PropertyField(e.FindPropertyRelative("vectorSource"), new GUIContent("Value from"));
+                        bool fromObject = (VectorSource)e.FindPropertyRelative("vectorSource").enumValueIndex == VectorSource.GameObject;
+                        if (fromObject)
+                        {
+                            EditorGUILayout.PropertyField(e.FindPropertyRelative("referenceObject"), new GUIContent("Reference"));
+                            var offset = e.FindPropertyRelative("offset");
+                            KwinkitVarUI.NumberSource(offset.FindPropertyRelative("x"), e.FindPropertyRelative("offsetXRef"), "Offset X");
+                            KwinkitVarUI.NumberSource(offset.FindPropertyRelative("y"), e.FindPropertyRelative("offsetYRef"), "Offset Y");
+                            KwinkitVarUI.NumberSource(offset.FindPropertyRelative("z"), e.FindPropertyRelative("offsetZRef"), "Offset Z");
+                            if (e.FindPropertyRelative("referenceObject").objectReferenceValue == null)
+                                KwinkitUI.Warn("Choose the reference GameObject");
+                        }
+                        else
+                        {
+                            var vector = e.FindPropertyRelative("vector");
+                            KwinkitVarUI.AxisField(vector, "X", e.FindPropertyRelative("xRef"));
+                            KwinkitVarUI.AxisField(vector, "Y", e.FindPropertyRelative("yRef"));
+                            KwinkitVarUI.AxisField(vector, "Z", e.FindPropertyRelative("zRef"));
+                        }
                         EditorGUILayout.PropertyField(e.FindPropertyRelative("useLocal"), new GUIContent("Local space"));
                         EditorGUILayout.PropertyField(e.FindPropertyRelative("additive"), new GUIContent("Add to current"));
                     }
                     if (target.objectReferenceValue == null) KwinkitUI.Warn("No target assigned");
                     else if (ct == CommandType.DestroyObject && EditorUtility.IsPersistent(target.objectReferenceValue)) KwinkitUI.Warn("Target must be a scene object, not an asset");
                     break;
+                case CommandType.SetLightIntensity:
+                    EditorGUILayout.PropertyField(e.FindPropertyRelative("lightTarget"), new GUIContent("Light"));
+                    var intensity = e.FindPropertyRelative("intensity");
+                    KwinkitVarUI.NumberSource(intensity, e.FindPropertyRelative("intensityRef"), "Intensity", true);
+                    if (e.FindPropertyRelative("lightTarget").objectReferenceValue == null) KwinkitUI.Warn("Assign a Light component");
+                    break;
                 case CommandType.PlaySound:
                     var clip = e.FindPropertyRelative("clip");
                     EditorGUILayout.PropertyField(clip, new GUIContent("Clip"));
-                    EditorGUILayout.Slider(e.FindPropertyRelative("volume"), 0f, 1f, new GUIContent("Volume"));
+                    KwinkitVarUI.NumberSource(e.FindPropertyRelative("volume"), e.FindPropertyRelative("volumeRef"), "Volume");
                     EditorGUILayout.PropertyField(e.FindPropertyRelative("waitForEnd"), new GUIContent("Wait until done"));
                     if (clip.objectReferenceValue == null) KwinkitUI.Warn("No clip assigned");
                     break;
@@ -323,6 +350,53 @@ namespace Kwinkit.VS
                     GUILayout.Label("Pauses the sequence until the key is pressed.", EditorStyles.miniLabel);
                     break;
             }
+        }
+
+        // Only show extra fields when the selected option needs them.
+        void MoveFields(SerializedProperty command)
+        {
+            var targetP = command.FindPropertyRelative("moveTarget");
+            targetP.enumValueIndex = EditorGUILayout.Popup("Transform", targetP.enumValueIndex,
+                new[] { "GameObject", "Self", "Main Camera", "Player", "Character" });
+            switch ((MoveTarget)targetP.enumValueIndex)
+            {
+                case MoveTarget.GameObject:
+                    EditorGUILayout.PropertyField(command.FindPropertyRelative("target"), new GUIContent("GameObject"));
+                    if (command.FindPropertyRelative("target").objectReferenceValue == null)
+                        KwinkitUI.Warn("Choose a GameObject");
+                    break;
+                case MoveTarget.Character:
+                    EditorGUILayout.PropertyField(command.FindPropertyRelative("moveCharacter"), new GUIContent("Character"));
+                    if (command.FindPropertyRelative("moveCharacter").objectReferenceValue == null)
+                        KwinkitUI.Warn("Choose a Character");
+                    break;
+            }
+
+            EditorGUILayout.PropertyField(command.FindPropertyRelative("moveAction"), new GUIContent("Action"));
+
+            var valueP = command.FindPropertyRelative("moveValue");
+            valueP.enumValueIndex = EditorGUILayout.Popup("Value", valueP.enumValueIndex,
+                new[] { "GameObject", "Player Position", "Self Position", "Main Camera Position", "Vector3", "X", "Y", "Z" });
+            switch ((MoveValue)valueP.enumValueIndex)
+            {
+                case MoveValue.GameObject:
+                    EditorGUILayout.PropertyField(command.FindPropertyRelative("referenceObject"), new GUIContent("GameObject"));
+                    if (command.FindPropertyRelative("referenceObject").objectReferenceValue == null)
+                        KwinkitUI.Warn("Choose a source GameObject");
+                    break;
+                case MoveValue.Vector3:
+                    EditorGUILayout.PropertyField(command.FindPropertyRelative("moveVector"), new GUIContent("Vector3"));
+                    break;
+                case MoveValue.X:
+                case MoveValue.Y:
+                case MoveValue.Z:
+                    EditorGUILayout.PropertyField(command.FindPropertyRelative("moveAxisValue"), new GUIContent("Amount"));
+                    break;
+            }
+
+            var duration = command.FindPropertyRelative("duration");
+            duration.floatValue = Mathf.Max(0f, EditorGUILayout.FloatField(
+                new GUIContent("Duration", "Seconds. 0 teleports."), duration.floatValue));
         }
 
         void DrawFooter(KwinkitVS t)

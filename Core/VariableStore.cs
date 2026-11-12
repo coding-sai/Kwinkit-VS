@@ -12,6 +12,7 @@ namespace Kwinkit.VS
     public enum VariableType { Bool, Int, Float, String }
     public enum SetOperation { Set, Add, Toggle }
     public enum CompareOp { Equal, NotEqual, Greater, Less, GreaterOrEqual, LessOrEqual }
+    public enum ValueSource { Constant, Variable }
 
     /// <summary>One variable: name, type and a value slot per type (only the slot matching the type is used).</summary>
     [Serializable]
@@ -31,6 +32,21 @@ namespace Kwinkit.VS
         public List<VariableDef> variables = new List<VariableDef>();
         [Tooltip("Name of the JSON save file. Leave empty to use the asset name.")]
         public string saveFileName = "";
+        [Tooltip("When OFF (default), every Play session starts with the Default values shown in this asset. When ON, live values are saved and restored between sessions.")]
+        public bool persistAcrossSessions = false;
+        [SerializeField, HideInInspector] string persistentId = "";
+        public string PersistentId => persistentId;
+
+#if UNITY_EDITOR
+        void OnValidate()
+        {
+            if (string.IsNullOrEmpty(persistentId))
+            {
+                persistentId = Guid.NewGuid().ToString("N");
+                UnityEditor.EditorUtility.SetDirty(this);
+            }
+        }
+#endif
     }
 
     /// <summary>Live values, change events and persistence for Variable Stores.</summary>
@@ -53,7 +69,9 @@ namespace Kwinkit.VS
         {
             string n = string.IsNullOrWhiteSpace(s.saveFileName) ? s.name : s.saveFileName.Trim();
             foreach (char c in Path.GetInvalidFileNameChars()) n = n.Replace(c, '_');
-            return Path.Combine(SaveFolder, n + ".json");
+            // Unique per asset, even when two stores have the same name or custom filename.
+            string id = s.PersistentId;
+            return Path.Combine(SaveFolder, n + (string.IsNullOrEmpty(id) ? "" : "_" + id) + ".json");
         }
 
         // ---------------------------------------------------------------- access
@@ -64,7 +82,7 @@ namespace Kwinkit.VS
             foreach (var d in s.variables)
                 if (!string.IsNullOrEmpty(d.name) && !st.values.ContainsKey(d.name))
                     st.values[d.name] = new VariableDef { name = d.name, type = d.type, boolValue = d.boolValue, intValue = d.intValue, floatValue = d.floatValue, stringValue = d.stringValue };
-            Load(s, st);
+            if (s.persistAcrossSessions) Load(s, st);
             states[s] = st;
             return st;
         }
@@ -98,6 +116,34 @@ namespace Kwinkit.VS
         }
 
         // ---------------------------------------------------------------- operations
+        // Resolves a live reference at execution time. Numeric Int/Float references can interoperate.
+        // Returns false rather than accidentally using a default when a reference is missing or incompatible.
+        public static bool TryResolve(VariableStore sourceStore, string sourceName, VariableType targetType, out VariableDef result)
+        {
+            result = null;
+            var source = Find(sourceStore, sourceName);
+            if (source == null) return false;
+            bool numericTarget = targetType == VariableType.Int || targetType == VariableType.Float;
+            bool numericSource = source.type == VariableType.Int || source.type == VariableType.Float;
+            if (source.type != targetType && !(numericTarget && numericSource))
+            {
+                WarnOnce("mismatch:" + sourceStore.GetInstanceID() + ":" + sourceName + ":" + targetType,
+                    "Variable '" + sourceName + "' cannot be used as " + targetType + ".", sourceStore);
+                return false;
+            }
+            double number = source.type == VariableType.Int ? source.intValue : source.floatValue;
+            if (numericTarget && (double.IsNaN(number) || double.IsInfinity(number) ||
+                (targetType == VariableType.Int && (number >= 2147483648.0 || number < -2147483648.0))))
+                return false;
+            result = new VariableDef {
+                type = targetType, boolValue = source.boolValue,
+                intValue = numericTarget ? (int)number : 0,
+                floatValue = numericTarget ? (float)number : 0f,
+                stringValue = source.stringValue
+            };
+            return true;
+        }
+
         public static void Apply(VariableStore s, string name, SetOperation op, VariableDef operand)
         {
             var v = Find(s, name);
@@ -139,7 +185,7 @@ namespace Kwinkit.VS
         /// <summary>Flags the store for saving and raises Changed. Call after editing a live value directly.</summary>
         public static void MarkChanged(VariableStore s, string name)
         {
-            if (s != null && states.TryGetValue(s, out var st)) st.dirty = true;
+            if (s != null && s.persistAcrossSessions && states.TryGetValue(s, out var st)) st.dirty = true;
             Changed?.Invoke(s, name);
         }
 
@@ -149,7 +195,7 @@ namespace Kwinkit.VS
         {
             foreach (var kv in states)
             {
-                if (!kv.Value.dirty || kv.Key == null) continue;
+                if (!kv.Value.dirty || kv.Key == null || !kv.Key.persistAcrossSessions) continue;
                 kv.Value.dirty = false;
                 Save(kv.Key, kv.Value);
             }
